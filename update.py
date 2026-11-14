@@ -23,7 +23,7 @@ def fetch_global_and_official_rates():
         "gold_24_usd": 2300
     }
     
-    # 1. السعر الرسمي
+    # 1. السعر الرسمي من المصارف العالمية
     try:
         res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
         if res.status_code == 200:
@@ -34,7 +34,7 @@ def fetch_global_and_official_rates():
     except Exception as e:
         print(f"خطأ في السعر الرسمي: {e}")
 
-    # 2. سعر الذهب العالمي
+    # 2. سعر الذهب العالمي للأونصة
     try:
         gold_res = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
         if gold_res.status_code == 200:
@@ -45,9 +45,9 @@ def fetch_global_and_official_rates():
     return data
 
 def scrape_libyan_parallel_market():
-    """سحب وقراءة أسعار السوق الموازي مع دعم الأرقام العربية الشرقية"""
+    """سحب وقراءة أسعار السوق الموازي مع طباعة العناوين للتشخيص"""
     parallel_rates = {
-        "usd_parallel": "6.15",
+        "usd_parallel": "6.15", # قيمة احتياطية منطقية
         "eur": "6.60"
     }
     
@@ -60,25 +60,27 @@ def scrape_libyan_parallel_market():
         res = requests.get(search_url, headers=headers, timeout=15)
         soup = BeautifulSoup(res.content, "xml")
         items = soup.find_all("item")
+        print(f"--- تم العثور على {len(items)} خبراً في البحث ---")
         
         for item in items[:10]:
-            # تطبيع النص وتحويل الأرقام الشرقية إلى غربية لتسهيل القراءة
-            title = normalize_arabic_numbers(item.title.text)
+            raw_title = item.title.text
+            title = normalize_arabic_numbers(raw_title)
+            print(f"-> فحص العنوان: {title}")
             
-            # البحث عن سعر الدولار المنطقي في السوق (مثلاً بين 5 و 10 دينار)
-            usd_match = re.search(r'(\d{1}\.\d{2})', title)
-            if usd_match and parallel_rates["usd_parallel"] == "6.15":
-                val = float(usd_match.group(1))
-                if 5.0 < val < 10.0:  # نطاق منطقي لسعر الدولار في ليبيا
+            # البحث عن أي رقم عشري يقع ضمن النطاق المنطقي لسعر الدولار في ليبيا (بين 5.00 و 10.00)
+            matches = re.findall(r'(\d{1,2}\.\d{1,2})', title)
+            for match in matches:
+                val = float(match)
+                if 5.0 <= val <= 10.0:
                     parallel_rates["usd_parallel"] = f"{val:.2f}"
-                    
-            eur_match = re.search(r'اليورو.*?(\d{1}\.\d{2})', title)
-            if eur_match and parallel_rates["eur"] == "6.60":
-                val_eur = float(eur_match.group(1))
-                if 5.0 < val_eur < 12.0:
-                    parallel_rates["eur"] = f"{val_eur:.2f}"
+                    print(f"*** تم العثور على سعر دولار موازي مقبول: {parallel_rates['usd_parallel']} ***")
+                    break
+            else:
+                continue
+            break
+            
     except Exception as e:
-        print(f"خطأ في السحب: {e}")
+        print(f"خطأ في عملية السحب: {e}")
 
     return parallel_rates
 
@@ -86,7 +88,7 @@ def main():
     official_data = fetch_global_and_official_rates()
     parallel_data = scrape_libyan_parallel_market()
 
-    # حساب أسعار الذهب محلياً بناءً على الأونصة وسعر الموازي
+    # حساب أسعار الذهب محلياً بناءً على الأونصة وسعر الموازي المستخرج
     gold_24_lyd = "460"
     gold_18_lyd = "345"
     
@@ -98,8 +100,8 @@ def main():
             gram_18 = gram_24 * (18 / 24)
             gold_24_lyd = f"{gram_24:.1f}"
             gold_18_lyd = f"{gram_18:.1f}"
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"خطأ في حساب الذهب: {e}")
 
     final_rates = {
         "usd_official": official_data["usd_official"],
@@ -113,7 +115,7 @@ def main():
     with open("rates.json", "w", encoding="utf-8") as f:
         json.dump(final_rates, f, ensure_ascii=False, indent=4)
     
-    print("تم التحديث بنجاح:", final_rates)
+    print("النتيجة النهائية المحفوظة في rates.json:", final_rates)
 
 if __name__ == "__main__":
     main()
