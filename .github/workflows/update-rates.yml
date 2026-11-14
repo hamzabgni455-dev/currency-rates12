@@ -1,0 +1,40 @@
+name: تحديث أسعار العملات والمعادن تلقائياً
+
+on:
+  schedule:
+    # يعمل تلقائياً كل 30 دقيقة
+    - cron: '*/30 * * * *'
+  # يسمح لك بتشغيله يدوياً في أي وقت للتجربة
+  workflow_dispatch:
+
+# منح صلاحية الكتابة لرفع ملف rates.json المحدث للمستودع
+permissions:
+  contents: write
+
+jobs:
+  update-market-rates:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: سحب ملفات المستودع
+        uses: actions/checkout@v4
+
+      - name: إعداد بيئة Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: تثبيت المكتبات المطلوبة
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: تشغيل سكربت جلب الأسعار الحقيقية
+        run: python update.py
+
+      - name: حفظ ورفع ملف rates.json المحدث
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add rates.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "تحديث آلي لأسعار السوق والعملات" && git push)
