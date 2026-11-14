@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 import json
+import os
 import re
 import requests
 from bs4 import BeautifulSoup
+
+OILPRICEAPI_KEY = os.environ.get("OILPRICEAPI_KEY")  # يُقرأ من متغير بيئة على جهازك، لا يُكتب هنا أبداً
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -61,7 +64,11 @@ def scrape_parallel_market(rates):
 
 
 def scrape_gold(rates):
-    """يحسب سعر الذهب محلياً انطلاقاً من سعر الأونصة العالمية (gold-api.com) وسعر الدولار الموازي المستخرج أعلاه"""
+    """
+    يحسب سعر الذهب محلياً انطلاقاً من سعر الأونصة العالمية (gold-api.com)
+    وسعر الدولار الموازي (usd_parallel) بناءً على اختيارك: كثير من صاغة
+    الذهب في ليبيا يسعّرون فعلياً حسب الدولار الموازي لا الرسمي.
+    """
     try:
         res = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
         res.raise_for_status()
@@ -78,35 +85,40 @@ def scrape_gold(rates):
 
 def scrape_oil(rates):
     """
-    يجلب سعر برنت من نقطة نهاية تجريبية (demo) مجانية بلا مفتاح API.
-    تنويه: هذه نقطة تجريبية وقد لا تعكس السعر اللحظي الدقيق. للحصول على
-    سعر حي ودقيق يفضَّل إنشاء حساب مجاني في oilpriceapi.com والحصول على
-    مفتاح API واستخدام مسار /v1/prices/latest بدلاً من /v1/demo/prices.
+    يجلب سعر برنت الحي من oilpriceapi.com باستخدام مفتاح API حقيقي
+    (مسار /v1/prices/latest، وليس /v1/demo/prices التجريبي الثابت).
+    المفتاح يُقرأ من متغير البيئة OILPRICEAPI_KEY فقط — لا تكتبه هنا.
+    إن لم يوجد مفتاح، تبقى القيمة الافتراضية كما هي دون محاولة الاتصال.
     """
+    if not OILPRICEAPI_KEY:
+        print("تنويه: لم يُعثر على OILPRICEAPI_KEY في متغيرات البيئة؛ سيُستخدم سعر النفط الافتراضي الثابت.")
+        return rates
     try:
-        res = requests.get("https://api.oilpriceapi.com/v1/demo/prices", timeout=10)
+        res = requests.get(
+            "https://api.oilpriceapi.com/v1/prices/latest",
+            params={"by_code": "BRENT_CRUDE_USD"},
+            headers={"Authorization": f"Token {OILPRICEAPI_KEY}"},
+            timeout=10,
+        )
         res.raise_for_status()
-        for p in res.json().get("data", {}).get("prices", []):
-            if p.get("code") == "BRENT_CRUDE_USD":
-                rates["oil_brent"] = f"{float(p['price']):.2f}"
-                break
+        price = res.json()["data"]["price"]
+        rates["oil_brent"] = f"{float(price):.2f}"
     except Exception as e:
         print(f"تعذر جلب سعر النفط: {e}")
     return rates
 
 
 def scrape_libyan_rates():
-    # قيم افتراضية تُستخدم فقط إذا فشل الاتصال بجميع المصادر
+    # قيم افتراضية تُستخدم فقط إذا فشل الاتصال بجميع المصادر (محدَّثة ومؤكدة بتاريخ 14-15 نوفمبر 2026)
     rates = {
-        "usd_official": "6.40",   # ملاحظة: السعر الرسمي يحدَّد إدارياً من مصرف ليبيا
-                                   # المركزي ولا يُنشر على صفحة يمكن سحبها يومياً بشكل
-                                   # موثوق؛ يبقى ثابتاً هنا إلى أن تُحدّثه يدوياً عند
-                                   # صدور قرار جديد من المركزي
-        "usd_parallel": "10.20",
-        "eur": "11.25",
-        "gold_18": "345",
-        "gold_24": "460",
-        "oil_brent": "74.50",
+        "usd_official": "6.3759",  # آخر قرار تخفيض من مصرف ليبيا المركزي (يناير 2026)؛
+                                     # يتغير نادراً بقرار إداري ولا يُنشر يومياً، فحدّثه يدوياً
+                                     # عند صدور قرار جديد من المركزي
+        "usd_parallel": "10.175",
+        "eur": "11.245",
+        "gold_18": "603.8",
+        "gold_24": "805.0",
+        "oil_brent": "93.00",  # قيمة تقريبية وقت الكتابة؛ ستُستبدل بسعر حي إذا توفر OILPRICEAPI_KEY
     }
     rates = scrape_parallel_market(rates)
     rates = scrape_gold(rates)
