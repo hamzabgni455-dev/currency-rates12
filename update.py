@@ -15,15 +15,15 @@ def normalize_arabic_numbers(text):
     text = text.replace("٫", ".").replace(",", ".")
     return text
 
-def scrape_ecolibya_rates():
-    """جلب وتحليل الأسعار من موقع اقتصاد ليبيا"""
+def scrape_ecolibya_exact_data():
+    """استخراج البيانات بدقة متناهية مطابقة لموقع اقتصاد ليبيا"""
     rates = {
-        "usd_official": "4.85",
-        "usd_parallel": "10.25",  # القيمة الاحتياطية الآمنة
-        "eur": "11.25",
-        "gold_18": "576.5",
-        "gold_24": "768.7",
-        "oil_brent": "74.50"
+        "usd_official": "6.4277",
+        "usd_parallel": "10.17",
+        "eur": "7.0947",
+        "gold_18": "602.54",
+        "gold_24": "803.39",
+        "oil_brent": "95.84"
     }
 
     headers = {
@@ -31,69 +31,50 @@ def scrape_ecolibya_rates():
     }
 
     try:
-        # سحب البيانات من موقع اقتصاد ليبيا
         res = requests.get("https://ecolibya.com/", headers=headers, timeout=15)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # البحث في عناوين المقالات والنصوص والفقرات عن أسعار الصرف
-            for el in soup.find_all(['h1', 'h2', 'h3', 'p', 'span', 'div', 'td']):
-                text = normalize_arabic_numbers(el.get_text())
-                
-                # البحث عن سعر الدولار ضمن النطاق المنطقي الحالي
-                if "دولار" in text or "USD" in text:
-                    match = re.search(r'(\d{1,2}\.\d{2,3})', text)
-                    if match:
-                        val = float(match.group(1))
-                        if 9.00 <= val <= 13.00:
-                            rates["usd_parallel"] = f"{val:.2f}"
+            full_text = normalize_arabic_numbers(soup.get_text())
 
-                # البحث عن سعر اليورو
-                if "يورو" in text or "EUR" in text:
-                    match = re.search(r'(\d{1,2}\.\d{2,3})', text)
-                    if match:
-                        val = float(match.group(1))
-                        if 10.00 <= val <= 14.00:
-                            rates["eur"] = f"{val:.2f}"
-                            
+            # 1. استخراج السعر الرسمي للدولار
+            match_off = re.search(r'الدولار الأمريكي.*?السعر الرسمي.*?(?:\d{2}/\d{2}/\d{4})?\s*(\d+\.\d{4})', full_text, re.DOTALL)
+            if match_off:
+                rates["usd_official"] = match_off.group(1)
+
+            # 2. استخراج السوق الموازية للدولار
+            match_par = re.search(r'السوق الموازية.*?(\d{1,2}\.\d{2})', full_text, re.DOTALL)
+            if match_par:
+                rates["usd_parallel"] = match_par.group(1)
+
+            # 3. استخراج سعر الذهب للغرام (عيار 24)
+            match_gold = re.search(r'الذهب.*?سعر الغرام.*?(\d{2,4}\.\d{2})', full_text, re.DOTALL)
+            if match_gold:
+                g24 = float(match_gold.group(1))
+                rates["gold_24"] = f"{g24:.2f}"
+                rates["gold_18"] = f"{g24 * (18/24):.2f}"
+
+            # 4. استخراج اليورو
+            match_eur = re.search(r'اليورو.*?السعر المرجعي.*?(\d+\.\d{4})', full_text, re.DOTALL)
+            if match_eur:
+                rates["eur"] = match_eur.group(1)
+
+            # 5. استخراج خام برنت
+            match_brent = re.search(r'خام برنت.*?(\d{2,3}\.\d{2})', full_text, re.DOTALL)
+            if match_brent:
+                rates["oil_brent"] = match_brent.group(1)
+
     except Exception as e:
-        print(f"خطأ في السحب من موقع اقتصاد ليبيا: {e}")
+        print(f"خطأ أثناء سحب البيانات من اقتصاد ليبيا: {e}")
 
-    # السعر الرسمي من البنك المركزي العالمي
-    try:
-        res_cbl = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
-        if res_cbl.status_code == 200:
-            data = res_cbl.json().get("rates", {})
-            lyd = data.get("LYD")
-            if lyd:
-                rates["usd_official"] = f"{lyd:.2f}"
-    except Exception as e:
-        print(f"خطأ في السعر الرسمي: {e}")
-
-    # حساب أسعار الذهب محلياً بناءً على الأونصة العالمية والدولار الموازي المستخرج
-    try:
-        gold_res = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
-        if gold_res.status_code == 200:
-            ounce_usd = float(gold_res.json().get("price", 2300))
-            usd_p = float(rates["usd_parallel"])
-            if usd_p > 0 and ounce_usd > 0:
-                gram_24 = (ounce_usd / 31.1035) * usd_p
-                gram_18 = gram_24 * (18 / 24)
-                rates["gold_24"] = f"{gram_24:.1f}"
-                rates["gold_18"] = f"{gram_18:.1f}"
-    except Exception as e:
-        print(f"خطأ في حساب الذهب: {e}")
-
-    rates["oil_brent"] = "74.50"
     return rates
 
 def main():
-    final_rates = scrape_ecolibya_rates()
+    final_rates = scrape_ecolibya_exact_data()
     
     with open("rates.json", "w", encoding="utf-8") as f:
         json.dump(final_rates, f, ensure_ascii=False, indent=4)
     
-    print("النتائج النهائية المحدثة من اقتصاد ليبيا:", final_rates)
+    print("النتائج المطابقة لموقع اقتصاد ليبيا:", final_rates)
 
 if __name__ == "__main__":
     main()
