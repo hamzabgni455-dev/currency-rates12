@@ -36,32 +36,25 @@ def scrape_libyan_rates():
             for el in soup.find_all(['td', 'span', 'strong', 'div', 'p']):
                 text = normalize_arabic_numbers(el.get_text())
                 
+                # البحث عن الدولار
                 if "دولار" in text or "USD" in text:
                     match = re.search(r'(\d{1,2}\.\d{2,3})', text)
                     if match:
                         val = float(match.group(1))
                         if 9.00 <= val <= 13.00:
-                            rates["usd_parallel"] = f"{val:.3f}".rstrip('0').rstrip('.')
+                            rates["usd_parallel"] = f"{val:.2f}"
 
+                # البحث عن اليورو (مع اشتراط أن يكون مختلفاً عن الدولار وأعلى منه بقليل)
                 if "يورو" in text or "EUR" in text:
                     match = re.search(r'(\d{1,2}\.\d{2,3})', text)
                     if match:
                         val = float(match.group(1))
                         if 10.00 <= val <= 14.00:
-                            rates["eur"] = f"{val:.3f}".rstrip('0').rstrip('.')
+                            rates["eur"] = f"{val:.2f}"
     except Exception as e:
         print(f"خطأ في السحب: {e}")
 
-    try:
-        res_cbl = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
-        if res_cbl.status_code == 200:
-            data = res_cbl.json().get("rates", {})
-            lyd = data.get("LYD")
-            if lyd:
-                rates["usd_official"] = f"{lyd:.2f}"
-    except Exception as e:
-        print(f"خطأ في السعر الرسمي: {e}")
-
+    # حساب أسعار الذهب محلياً بناءً على الأونصة العالمية والدولار الموازي
     try:
         gold_res = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
         if gold_res.status_code == 200:
@@ -75,9 +68,7 @@ def scrape_libyan_rates():
     except Exception as e:
         print(f"خطأ في حساب الذهب: {e}")
 
-    # سعر النفط الثابت والواقعي لخام برنت
     rates["oil_brent"] = "74.50"
-
     return rates
 
 def main():
