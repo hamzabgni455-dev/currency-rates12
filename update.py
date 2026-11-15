@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import re
+from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
@@ -24,7 +25,8 @@ def scrape_ecolibya_exact_data():
         "egp": "0.1203",
         "gold_18": "602.54",
         "gold_24": "803.39",
-        "oil_brent": "108.41"
+        "oil_brent": "108.41",
+        "status": "محدث"
     }
 
     headers = {
@@ -64,13 +66,19 @@ def scrape_ecolibya_exact_data():
             if match_egp:
                 rates["egp"] = match_egp.group(1)
 
-            # 6. الدينار التونسي (إن توفر في النصوص أو بقيمته التقريبية)
+            # 6. الدينار التونسي
             match_tnd = re.search(r'الدينار التونسي.*?(\d+\.\d+)', full_text, re.DOTALL)
             if match_tnd:
                 rates["tnd"] = match_tnd.group(1)
+                
+            # إضافة وقت التحديث بالتوقيت المحلي
+            now = datetime.now()
+            rates["last_update"] = now.strftime("%Y-%m-%d %H:%M")
+            rates["status"] = "محدث"
 
     except Exception as e:
-        print(f"خطأ أثناء سحب البيانات من اقتصاد ليبيا: {e}")
+        print(f"خطأ أثناء سحب البيانات: {e}")
+        rates["status"] = "ثابتة"
 
     return rates
 
