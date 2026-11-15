@@ -15,10 +15,11 @@ def normalize_arabic_numbers(text):
     text = text.replace("٫", ".").replace(",", ".")
     return text
 
-def scrape_libyan_rates():
+def scrape_ecolibya_rates():
+    """جلب وتحليل الأسعار من موقع اقتصاد ليبيا"""
     rates = {
         "usd_official": "4.85",
-        "usd_parallel": "10.25",
+        "usd_parallel": "10.25",  # القيمة الاحتياطية الآمنة
         "eur": "11.25",
         "gold_18": "576.5",
         "gold_24": "768.7",
@@ -30,13 +31,16 @@ def scrape_libyan_rates():
     }
 
     try:
-        res = requests.get("https://www.eanlibya.com/exchangerate/", headers=headers, timeout=15)
+        # سحب البيانات من موقع اقتصاد ليبيا
+        res = requests.get("https://ecolibya.com/", headers=headers, timeout=15)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
-            for el in soup.find_all(['td', 'span', 'strong', 'div', 'p']):
+            
+            # البحث في عناوين المقالات والنصوص والفقرات عن أسعار الصرف
+            for el in soup.find_all(['h1', 'h2', 'h3', 'p', 'span', 'div', 'td']):
                 text = normalize_arabic_numbers(el.get_text())
                 
-                # البحث عن الدولار
+                # البحث عن سعر الدولار ضمن النطاق المنطقي الحالي
                 if "دولار" in text or "USD" in text:
                     match = re.search(r'(\d{1,2}\.\d{2,3})', text)
                     if match:
@@ -44,17 +48,29 @@ def scrape_libyan_rates():
                         if 9.00 <= val <= 13.00:
                             rates["usd_parallel"] = f"{val:.2f}"
 
-                # البحث عن اليورو (مع اشتراط أن يكون مختلفاً عن الدولار وأعلى منه بقليل)
+                # البحث عن سعر اليورو
                 if "يورو" in text or "EUR" in text:
                     match = re.search(r'(\d{1,2}\.\d{2,3})', text)
                     if match:
                         val = float(match.group(1))
                         if 10.00 <= val <= 14.00:
                             rates["eur"] = f"{val:.2f}"
+                            
     except Exception as e:
-        print(f"خطأ في السحب: {e}")
+        print(f"خطأ في السحب من موقع اقتصاد ليبيا: {e}")
 
-    # حساب أسعار الذهب محلياً بناءً على الأونصة العالمية والدولار الموازي
+    # السعر الرسمي من البنك المركزي العالمي
+    try:
+        res_cbl = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
+        if res_cbl.status_code == 200:
+            data = res_cbl.json().get("rates", {})
+            lyd = data.get("LYD")
+            if lyd:
+                rates["usd_official"] = f"{lyd:.2f}"
+    except Exception as e:
+        print(f"خطأ في السعر الرسمي: {e}")
+
+    # حساب أسعار الذهب محلياً بناءً على الأونصة العالمية والدولار الموازي المستخرج
     try:
         gold_res = requests.get("https://api.gold-api.com/price/XAU", timeout=10)
         if gold_res.status_code == 200:
@@ -72,10 +88,12 @@ def scrape_libyan_rates():
     return rates
 
 def main():
-    final_rates = scrape_libyan_rates()
+    final_rates = scrape_ecolibya_rates()
+    
     with open("rates.json", "w", encoding="utf-8") as f:
         json.dump(final_rates, f, ensure_ascii=False, indent=4)
-    print("النتائج النهائية المحدثة:", final_rates)
+    
+    print("النتائج النهائية المحدثة من اقتصاد ليبيا:", final_rates)
 
 if __name__ == "__main__":
     main()
