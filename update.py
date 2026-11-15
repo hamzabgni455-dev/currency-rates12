@@ -16,14 +16,13 @@ def normalize_arabic_numbers(text):
     return text
 
 def scrape_ecolibya_exact_data():
-    """استخراج البيانات بدقة متناهية مطابقة لموقع اقتصاد ليبيا"""
+    """استخراج البيانات بدقة مطابقة لموقع اقتصاد ليبيا (بدون يورو، مع برنت العالمي)"""
     rates = {
         "usd_official": "6.4277",
         "usd_parallel": "10.17",
-        "eur": "7.0947",
         "gold_18": "602.54",
         "gold_24": "803.39",
-        "oil_brent": "95.84"
+        "oil_brent": "108.41"
     }
 
     headers = {
@@ -53,13 +52,8 @@ def scrape_ecolibya_exact_data():
                 rates["gold_24"] = f"{g24:.2f}"
                 rates["gold_18"] = f"{g24 * (18/24):.2f}"
 
-            # 4. استخراج اليورو
-            match_eur = re.search(r'اليورو.*?السعر المرجعي.*?(\d+\.\d{4})', full_text, re.DOTALL)
-            if match_eur:
-                rates["eur"] = match_eur.group(1)
-
-            # 5. استخراج خام برنت
-            match_brent = re.search(r'خام برنت.*?(\d{2,3}\.\d{2})', full_text, re.DOTALL)
+            # 4. استخراج خام برنت السعر العالمي
+            match_brent = re.search(r'خام برنت.*?السعر العالمي.*?(\d{2,3}\.\d{2})', full_text, re.DOTALL)
             if match_brent:
                 rates["oil_brent"] = match_brent.group(1)
 
@@ -74,7 +68,7 @@ def main():
     with open("rates.json", "w", encoding="utf-8") as f:
         json.dump(final_rates, f, ensure_ascii=False, indent=4)
     
-    print("النتائج المطابقة لموقع اقتصاد ليبيا:", final_rates)
+    print("النتائج النهائية المحدثة:", final_rates)
 
 if __name__ == "__main__":
     main()
