@@ -16,10 +16,12 @@ def normalize_arabic_numbers(text):
     return text
 
 def scrape_ecolibya_exact_data():
-    """استخراج البيانات بدقة مطابقة لموقع اقتصاد ليبيا (بدون يورو، مع برنت العالمي)"""
+    """استخراج البيانات بدقة مطابقة لموقع اقتصاد ليبيا"""
     rates = {
         "usd_official": "6.4277",
         "usd_parallel": "10.17",
+        "tnd": "3.25",
+        "egp": "0.1203",
         "gold_18": "602.54",
         "gold_24": "803.39",
         "oil_brent": "108.41"
@@ -35,27 +37,37 @@ def scrape_ecolibya_exact_data():
             soup = BeautifulSoup(res.text, 'html.parser')
             full_text = normalize_arabic_numbers(soup.get_text())
 
-            # 1. استخراج السعر الرسمي للدولار
+            # 1. الدولار الرسمي
             match_off = re.search(r'الدولار الأمريكي.*?السعر الرسمي.*?(?:\d{2}/\d{2}/\d{4})?\s*(\d+\.\d{4})', full_text, re.DOTALL)
             if match_off:
                 rates["usd_official"] = match_off.group(1)
 
-            # 2. استخراج السوق الموازية للدولار
+            # 2. السوق الموازية للدولار
             match_par = re.search(r'السوق الموازية.*?(\d{1,2}\.\d{2})', full_text, re.DOTALL)
             if match_par:
                 rates["usd_parallel"] = match_par.group(1)
 
-            # 3. استخراج سعر الذهب للغرام (عيار 24)
+            # 3. الذهب غرام عيار 24
             match_gold = re.search(r'الذهب.*?سعر الغرام.*?(\d{2,4}\.\d{2})', full_text, re.DOTALL)
             if match_gold:
                 g24 = float(match_gold.group(1))
                 rates["gold_24"] = f"{g24:.2f}"
                 rates["gold_18"] = f"{g24 * (18/24):.2f}"
 
-            # 4. استخراج خام برنت السعر العالمي
+            # 4. خام برنت العالمي
             match_brent = re.search(r'خام برنت.*?السعر العالمي.*?(\d{2,3}\.\d{2})', full_text, re.DOTALL)
             if match_brent:
                 rates["oil_brent"] = match_brent.group(1)
+
+            # 5. الجنيه المصري
+            match_egp = re.search(r'الجنيه المصري.*?(\d+\.\d{4})', full_text, re.DOTALL)
+            if match_egp:
+                rates["egp"] = match_egp.group(1)
+
+            # 6. الدينار التونسي (إن توفر في النصوص أو بقيمته التقريبية)
+            match_tnd = re.search(r'الدينار التونسي.*?(\d+\.\d+)', full_text, re.DOTALL)
+            if match_tnd:
+                rates["tnd"] = match_tnd.group(1)
 
     except Exception as e:
         print(f"خطأ أثناء سحب البيانات من اقتصاد ليبيا: {e}")
