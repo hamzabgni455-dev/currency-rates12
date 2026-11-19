@@ -1,34 +1,3 @@
-# -*- coding: utf-8 -*-
-import json
-import re
-from datetime import datetime
-from zoneinfo import ZoneInfo
-import requests
-from bs4 import BeautifulSoup
-
-
-def normalize_arabic_numbers(text):
-    """تحويل الأرقام العربية الشرقية والفارسية وتوحيد الفواصل العشرية"""
-    if not text:
-        return ""
-    trans = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵٦۷۸٩", "01234567890123456789")
-    text = text.translate(trans)
-    text = text.replace("٫", ".").replace("٬", "").replace(",", ".")
-    # تنظيف المسافات المتكررة مع الحفاظ على فواصل الأسطر
-    text = re.sub(r"[ \t\x0b\f\r]+", " ", text)
-    return text
-
-
-def extract_near(text, anchor_pattern, value_pattern, window=140):
-    """البحث عن قيمة رقمية ضمن مسافة محدودة بعد عبارة مرجعية لتجنب القفز العشوائي"""
-    for m in re.finditer(anchor_pattern, text):
-        snippet = text[m.end(): m.end() + window]
-        val_match = re.search(value_pattern, snippet)
-        if val_match:
-            return val_match.group(1)
-    return None
-
-
 def scrape_ecolibya_exact_data():
     """استخراج البيانات من موقع اقتصاد ليبيا مع التحقق من كل حقل"""
     rates = {
@@ -66,12 +35,7 @@ def scrape_ecolibya_exact_data():
         if not res.encoding or res.encoding.lower() == "iso-8859-1":
             res.encoding = res.apparent_encoding or "utf-8"
 
-      print("HTTP Status:", res.status_code, "| Text length:", len(clean_text))
-        if matched == 0:
-            print("Sample text:\n", clean_text[:600])
-            
         soup = BeautifulSoup(res.text, "html.parser")
-        # إزالة السكربتات والأنماط لتقليل التشويش النصي
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
 
@@ -149,21 +113,12 @@ def scrape_ecolibya_exact_data():
         rates["matched_fields"] = matched
         rates["status"] = "محدث" if matched > 0 else "ثابتة"
 
+        print("HTTP Status:", res.status_code, "| Text length:", len(clean_text), "| Matched:", matched)
+        if matched == 0:
+            print("Sample text:\n", clean_text[:600])
+
     except Exception as e:
         print(f"خطأ أثناء سحب البيانات: {e}")
         rates["status"] = "ثابتة"
 
     return rates
-
-
-def main():
-    final_rates = scrape_ecolibya_exact_data()
-
-    with open("rates.json", "w", encoding="utf-8") as f:
-        json.dump(final_rates, f, ensure_ascii=False, indent=4)
-
-    print("النتائج النهائية المحدثة:", json.dumps(final_rates, ensure_ascii=False, indent=2))
-
-
-if __name__ == "__main__":
-    main()
