@@ -1,27 +1,23 @@
-import re
 import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-
-def _get_json(url, headers=None, timeout=20):
-    r = requests.get(url, headers=headers or {}, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def _yahoo_price(symbol, headers):
-    """سعر لحظي من Yahoo Finance"""
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?interval=1d&range=1d"
-    )
-    data = _get_json(url, headers)
-    result = data.get("chart", {}).get("result", [])
-    if not result:
+# ---------- دوال مساعدة ----------
+def _safe_get_json(url, headers=None, timeout=20):
+    """جلب JSON مع معالجة الأخطاء وإرجاع None عند الفشل"""
+    try:
+        r = requests.get(url, headers=headers or {}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"  ⚠️ فشل الاتصال بـ {url}: {e}")
         return None
-    return result[0].get("meta", {}).get("regularMarketPrice")
+
+def _to_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def scrape_market_rates_multi_source():
@@ -47,100 +43,132 @@ def scrape_market_rates_multi_source():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+        "Accept": "application/json, text/plain, */*",
     }
 
     matched = 0
 
-    # ========== 1) العملات الرسمية من API مجاني ==========
+    # ============================================================
+    # 1) سعر الصرف الرسمي USD/LYD من currency-api (بدون مفتاح)
+    # ============================================================
     try:
-        data = _get_json(
-            "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json",
+        data = _safe_get_json(
+            "https://cdn.jsdelivr.net/gh/NemesisX1/currency-api@main/v1/currencies/usd.json",
             headers,
         )
-        usd = data.get("usd", {})
+        if data:
+            # البنية متوقعة: {"usd": {"lyd": 6.43, "tnd": 3.1, "egp": 48.5, ...}}
+            usd_block = data.get("usd", {})
+            lyd = _to_float(usd_block.get("lyd"))
+            if lyd and 4.0 < lyd < 12.0:
+                rates["usd_official"] = f"{lyd:.4f}"
+                matched += 1
+                print(f"✅ [رسمي] USD/LYD = {lyd:.4f}")
 
-        if usd.get("lyd") and 2.0 < float(usd["lyd"]) < 20.0:
-            rates["usd_official"] = f"{float(usd['lyd']):.4f}"
-            matched += 1
-            print(f"[رسمي] USD/LYD = {rates['usd_official']}")
-
-        if usd.get("tnd") and float(usd["tnd"]) > 0:
-            # tnd هو: كم TND لكل 1 USD → نعكسها
-            rates["tnd"] = f"{1.0 / float(usd['tnd']):.4f}"
-            matched += 1
-
-        if usd.get("egp") and float(usd["egp"]) > 0:
-            rates["egp"] = f"{1.0 / float(usd['egp']):.4f}"
-            matched += 1
+            # العملات الأخرى (اختياري)
+            tnd = _to_float(usd_block.get("tnd"))
+            if tnd and 1.0 < tnd < 6.0:
+                rates["tnd"] = f"{1.0 / tnd:.4f}"  # نعكس لأن القيمة هي TND لكل USD
+            egp = _to_float(usd_block.get("egp"))
+            if egp and 10.0 < egp < 100.0:
+                rates["egp"] = f"{1.0 / egp:.4f}"
     except Exception as e:
-        print(f"[رسمي] تعذر: {e}")
+        print(f"❌ [رسمي] خطأ غير متوقع: {e}")
 
-    # ========== 2) النفط برنت من Yahoo Finance ==========
+    # ============================================================
+    # 2) السوق الموازي من fulusly (بدون مفتاح)
+    # ============================================================
     try:
-        oil = _yahoo_price("BZ=F", headers)
-        if oil and 20.0 < oil < 300.0:
-            rates["oil_brent"] = f"{oil:.2f}"
-            matched += 1
-            print(f"[برنت] {oil:.2f} USD")
+        data = _safe_get_json(
+            "https://fulusly.soft9.us/api/rates?from=USD&to=LYD",
+            headers,
+        )
+        if data:
+            # البنية المحتملة: {"rate": 10.63} أو {"result": 10.63} أو {"rates": {"LYD": 10.63}}
+            parallel = (
+                _to_float(data.get("rate"))
+                or _to_float(data.get("result"))
+                or _to_float(data.get("rates", {}).get("LYD"))
+            )
+            if parallel and 5.0 < parallel < 30.0:
+                rates["usd_parallel"] = f"{parallel:.2f}"
+                matched += 1
+                print(f"✅ [موازي] USD/LYD = {parallel:.2f}")
     except Exception as e:
-        print(f"[برنت] تعذر: {e}")
+        print(f"❌ [موازي] خطأ غير متوقع: {e}")
 
-    # ========== 3) الذهب: من Yahoo ثم نحوله للدينار الليبي ==========
+    # ============================================================
+    # 3) الذهب: سعر الأونصة بالدولار ثم التحويل للدينار
+    # ============================================================
+    gold_oz_usd = None
     try:
-        gold_oz = _yahoo_price("GC=F", headers)
-        if gold_oz and 1000.0 < gold_oz < 5000.0:
+        data = _safe_get_json(
+            "https://api.goldprice.dev/v1/prices?symbol=XAU-USD-SPOT",
+            headers,
+        )
+        if data:
+            # البنية المحتملة: {"price": 2650.4} أو {"data": {"price": 2650.4}}
+            gold_oz_usd = (
+                _to_float(data.get("price"))
+                or _to_float(data.get("data", {}).get("price"))
+                or _to_float(data.get("spot_usd_oz"))  # من xaus-api
+            )
+    except Exception as e:
+        print(f"❌ [ذهب] تعذر جلب سعر الأونصة: {e}")
+
+    # إذا فشل goldprice.dev، جرّب xaus-api كاحتياطي
+    if not gold_oz_usd:
+        try:
+            data = _safe_get_json("https://xaus.com/api/v1/spot", headers)
+            if data:
+                gold_oz_usd = _to_float(data.get("spot_usd_oz"))
+        except Exception as e:
+            print(f"❌ [ذهب-احتياطي] تعذر: {e}")
+
+    if gold_oz_usd and 1000.0 < gold_oz_usd < 6000.0:
+        try:
             usd_lyd = float(rates["usd_official"])
-            gold_24 = (gold_oz / 31.1035) * usd_lyd
+            gold_24 = (gold_oz_usd / 31.1035) * usd_lyd
             rates["gold_24"] = f"{gold_24:.2f}"
             rates["gold_18"] = f"{gold_24 * (18.0 / 24.0):.2f}"
             matched += 2
-            print(
-                f"[ذهب] أونصة={gold_oz:.2f}$ → "
-                f"ع24={rates['gold_24']} / ع18={rates['gold_18']}"
+            print(f"✅ [ذهب] أونصة={gold_oz_usd:.2f}$ → ع24={rates['gold_24']} / ع18={rates['gold_18']}")
+        except Exception as e:
+            print(f"❌ [ذهب] خطأ في الحساب: {e}")
+
+    # ============================================================
+    # 4) نفط برنت من AmericasOilWatch (بدون مفتاح)
+    # ============================================================
+    try:
+        data = _safe_get_json(
+            "https://americasoilwatch.com/api/v1/brent",
+            headers,
+        )
+        if data:
+            # البنية المحتملة: {"price": 87.33} أو {"brent": 87.33} أو {"value": 87.33}
+            brent = (
+                _to_float(data.get("price"))
+                or _to_float(data.get("brent"))
+                or _to_float(data.get("value"))
             )
+            if brent and 20.0 < brent < 200.0:
+                rates["oil_brent"] = f"{brent:.2f}"
+                matched += 1
+                print(f"✅ [برنت] {brent:.2f} USD")
     except Exception as e:
-        print(f"[ذهب] تعذر: {e}")
+        print(f"❌ [برنت] خطأ غير متوقع: {e}")
 
-    # ========== 4) السوق الموازي (eanlibya) ==========
-    if _try_parallel_eanlibya(rates, headers):
-        matched += 1
-
+    # ============================================================
+    # النتيجة النهائية
+    # ============================================================
     rates["matched_fields"] = matched
     rates["status"] = "محدث" if matched > 0 else "ثابتة"
-    print(f"[النتيجة] الحقول المطابقة: {matched}/8")
+    print(f"\n📊 الحقول المطابقة: {matched} / 8")
     return rates
 
 
-def _try_parallel_eanlibya(rates, headers):
-    """محاولة استخراج سعر الدولار الموازي من eanlibya"""
-    try:
-        r = requests.get(
-            "https://www.eanlibya.com/exchangerate/",
-            headers=headers,
-            timeout=20,
-        )
-        r.raise_for_status()
-        r.encoding = r.apparent_encoding or "utf-8"
-        soup = BeautifulSoup(r.text, "html.parser")
-        for t in soup(["script", "style", "noscript"]):
-            t.decompose()
-        txt = soup.get_text(separator="\n")
-
-        # جرّب عدة أنماط
-        patterns = [
-            r"الدولار\s*الأمريكي[^\d]{0,80}(\d{1,2}\.\d{2})",
-            r"USD[^\d]{0,80}(\d{1,2}\.\d{2})",
-            r"(\d{1,2}\.\d{2})\s*دينار",
-        ]
-        for pat in patterns:
-            m = re.search(pat, txt)
-            if m:
-                v = float(m.group(1))
-                if 5.0 < v < 30.0:
-                    rates["usd_parallel"] = f"{v:.2f}"
-                    print(f"[موازي] {v:.2f} LYD/USD")
-                    return True
-    except Exception as e:
-        print(f"[موازي] تعذر: {e}")
-    return False
+# للاختبار المحلي فقط:
+if __name__ == "__main__":
+    result = scrape_market_rates_multi_source()
+    import json
+    print(json.dumps(result, ensure_ascii=False, indent=2))
