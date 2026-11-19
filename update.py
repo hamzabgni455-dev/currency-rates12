@@ -1,23 +1,77 @@
+import re
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# ---------- دوال مساعدة ----------
-def _safe_get_json(url, headers=None, timeout=20):
-    """جلب JSON مع معالجة الأخطاء وإرجاع None عند الفشل"""
+
+def _get_json(url, headers=None, timeout=20):
+    r = requests.get(url, headers=headers or {}, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def _yahoo_price(symbol, headers):
+    """سعر لحظي من Yahoo Finance (قد يفشل بدون كوكيز/crumb)"""
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        f"?interval=1d&range=1d"
+    )
     try:
-        r = requests.get(url, headers=headers or {}, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            print(f"[yahoo:{symbol}] رمز استجابة غير متوقع: {r.status_code}")
+            return None
+        data = r.json()
     except Exception as e:
-        print(f"  ⚠️ فشل الاتصال بـ {url}: {e}")
+        print(f"[yahoo:{symbol}] فشل الطلب: {e}")
         return None
 
-def _to_float(value, default=None):
+    result = data.get("chart", {}).get("result")
+    if not result:
+        err = data.get("chart", {}).get("error")
+        print(f"[yahoo:{symbol}] لا توجد نتائج. error={err}")
+        return None
+    price = result[0].get("meta", {}).get("regularMarketPrice")
+    if price is None:
+        print(f"[yahoo:{symbol}] السعر غير موجود في meta")
+    return price
+
+
+def _stooq_price(symbol, headers):
+    """بديل مستقر عن Yahoo: أسعار من stooq.com (CSV بسيط، بدون كوكيز خاصة)"""
+    url = f"https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv"
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        lines = r.text.strip().splitlines()
+        if len(lines) < 2:
+            print(f"[stooq:{symbol}] لا توجد بيانات في الرد")
+            return None
+        fields = lines[1].split(",")
+        # Symbol,Date,Time,Open,High,Low,Close,Volume
+        close = fields[6]
+        if close in ("N/D", ""):
+            print(f"[stooq:{symbol}] القيمة غير متوفرة (N/D)")
+            return None
+        return float(close)
+    except Exception as e:
+        print(f"[stooq:{symbol}] فشل: {e}")
+        return None
+
+
+def _price_with_fallback(yahoo_symbol, stooq_symbol, headers, label):
+    """يجرب Yahoo أولاً، وإذا فشل يجرب stooq"""
+    price = _yahoo_price(yahoo_symbol, headers)
+    if price is not None:
+        print(f"[{label}] من Yahoo: {price}")
+        return price
+    price = _stooq_price(stooq_symbol, headers)
+    if price is not None:
+        print(f"[{label}] من stooq (بديل): {price}")
+        return price
+    print(f"[{label}] فشل من كل المصادر، سيُستخدم القيمة الثابتة")
+    return None
 
 
 def scrape_market_rates_multi_source():
@@ -43,132 +97,117 @@ def scrape_market_rates_multi_source():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+        "Accept": "*/*",
+        "Referer": "https://finance.yahoo.com/",
     }
 
     matched = 0
 
-    # ============================================================
-    # 1) سعر الصرف الرسمي USD/LYD من currency-api (بدون مفتاح)
-    # ============================================================
+    # ========== 1) العملات الرسمية من API مجاني ==========
     try:
-        data = _safe_get_json(
-            "https://cdn.jsdelivr.net/gh/NemesisX1/currency-api@main/v1/currencies/usd.json",
+        data = _get_json(
+            "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json",
             headers,
         )
-        if data:
-            # البنية متوقعة: {"usd": {"lyd": 6.43, "tnd": 3.1, "egp": 48.5, ...}}
-            usd_block = data.get("usd", {})
-            lyd = _to_float(usd_block.get("lyd"))
-            if lyd and 4.0 < lyd < 12.0:
-                rates["usd_official"] = f"{lyd:.4f}"
-                matched += 1
-                print(f"✅ [رسمي] USD/LYD = {lyd:.4f}")
+        usd = data.get("usd", {})
 
-            # العملات الأخرى (اختياري)
-            tnd = _to_float(usd_block.get("tnd"))
-            if tnd and 1.0 < tnd < 6.0:
-                rates["tnd"] = f"{1.0 / tnd:.4f}"  # نعكس لأن القيمة هي TND لكل USD
-            egp = _to_float(usd_block.get("egp"))
-            if egp and 10.0 < egp < 100.0:
-                rates["egp"] = f"{1.0 / egp:.4f}"
+        if usd.get("lyd") and 2.0 < float(usd["lyd"]) < 20.0:
+            rates["usd_official"] = f"{float(usd['lyd']):.4f}"
+            matched += 1
+            print(f"[رسمي] USD/LYD = {rates['usd_official']}")
+        else:
+            print("[رسمي] قيمة lyd غير موجودة أو خارج النطاق المتوقع")
+
+        if usd.get("tnd") and float(usd["tnd"]) > 0:
+            rates["tnd"] = f"{1.0 / float(usd['tnd']):.4f}"
+            matched += 1
+
+        if usd.get("egp") and float(usd["egp"]) > 0:
+            rates["egp"] = f"{1.0 / float(usd['egp']):.4f}"
+            matched += 1
     except Exception as e:
-        print(f"❌ [رسمي] خطأ غير متوقع: {e}")
-
-    # ============================================================
-    # 2) السوق الموازي من fulusly (بدون مفتاح)
-    # ============================================================
-    try:
-        data = _safe_get_json(
-            "https://fulusly.soft9.us/api/rates?from=USD&to=LYD",
-            headers,
-        )
-        if data:
-            # البنية المحتملة: {"rate": 10.63} أو {"result": 10.63} أو {"rates": {"LYD": 10.63}}
-            parallel = (
-                _to_float(data.get("rate"))
-                or _to_float(data.get("result"))
-                or _to_float(data.get("rates", {}).get("LYD"))
-            )
-            if parallel and 5.0 < parallel < 30.0:
-                rates["usd_parallel"] = f"{parallel:.2f}"
-                matched += 1
-                print(f"✅ [موازي] USD/LYD = {parallel:.2f}")
-    except Exception as e:
-        print(f"❌ [موازي] خطأ غير متوقع: {e}")
-
-    # ============================================================
-    # 3) الذهب: سعر الأونصة بالدولار ثم التحويل للدينار
-    # ============================================================
-    gold_oz_usd = None
-    try:
-        data = _safe_get_json(
-            "https://api.goldprice.dev/v1/prices?symbol=XAU-USD-SPOT",
-            headers,
-        )
-        if data:
-            # البنية المحتملة: {"price": 2650.4} أو {"data": {"price": 2650.4}}
-            gold_oz_usd = (
-                _to_float(data.get("price"))
-                or _to_float(data.get("data", {}).get("price"))
-                or _to_float(data.get("spot_usd_oz"))  # من xaus-api
-            )
-    except Exception as e:
-        print(f"❌ [ذهب] تعذر جلب سعر الأونصة: {e}")
-
-    # إذا فشل goldprice.dev، جرّب xaus-api كاحتياطي
-    if not gold_oz_usd:
+        print(f"[رسمي] تعذر (المصدر الأساسي): {e}")
+        # مصدر احتياطي لنفس الـ API (جافاسكريبت ديلفري أحياناً يحجب)
         try:
-            data = _safe_get_json("https://xaus.com/api/v1/spot", headers)
-            if data:
-                gold_oz_usd = _to_float(data.get("spot_usd_oz"))
-        except Exception as e:
-            print(f"❌ [ذهب-احتياطي] تعذر: {e}")
-
-    if gold_oz_usd and 1000.0 < gold_oz_usd < 6000.0:
-        try:
-            usd_lyd = float(rates["usd_official"])
-            gold_24 = (gold_oz_usd / 31.1035) * usd_lyd
-            rates["gold_24"] = f"{gold_24:.2f}"
-            rates["gold_18"] = f"{gold_24 * (18.0 / 24.0):.2f}"
-            matched += 2
-            print(f"✅ [ذهب] أونصة={gold_oz_usd:.2f}$ → ع24={rates['gold_24']} / ع18={rates['gold_18']}")
-        except Exception as e:
-            print(f"❌ [ذهب] خطأ في الحساب: {e}")
-
-    # ============================================================
-    # 4) نفط برنت من AmericasOilWatch (بدون مفتاح)
-    # ============================================================
-    try:
-        data = _safe_get_json(
-            "https://americasoilwatch.com/api/v1/brent",
-            headers,
-        )
-        if data:
-            # البنية المحتملة: {"price": 87.33} أو {"brent": 87.33} أو {"value": 87.33}
-            brent = (
-                _to_float(data.get("price"))
-                or _to_float(data.get("brent"))
-                or _to_float(data.get("value"))
+            data = _get_json(
+                "https://latest.currency-api.pages.dev/v1/currencies/usd.json",
+                headers,
             )
-            if brent and 20.0 < brent < 200.0:
-                rates["oil_brent"] = f"{brent:.2f}"
+            usd = data.get("usd", {})
+            if usd.get("lyd") and 2.0 < float(usd["lyd"]) < 20.0:
+                rates["usd_official"] = f"{float(usd['lyd']):.4f}"
                 matched += 1
-                print(f"✅ [برنت] {brent:.2f} USD")
-    except Exception as e:
-        print(f"❌ [برنت] خطأ غير متوقع: {e}")
+                print(f"[رسمي-بديل] USD/LYD = {rates['usd_official']}")
+        except Exception as e2:
+            print(f"[رسمي] تعذر المصدر البديل أيضاً: {e2}")
 
-    # ============================================================
-    # النتيجة النهائية
-    # ============================================================
+    # ========== 2) النفط برنت: Yahoo ثم stooq كبديل ==========
+    oil = _price_with_fallback("BZ=F", "cb.f", headers, "برنت")
+    if oil and 20.0 < oil < 300.0:
+        rates["oil_brent"] = f"{oil:.2f}"
+        matched += 1
+
+    # ========== 3) الذهب: Yahoo ثم stooq، ثم نحوله للدينار الليبي ==========
+    # يُحسب على أساس سعر الدولار الموازي (وليس الرسمي) حسب الطلب السابق
+    gold_oz = _price_with_fallback("GC=F", "xauusd", headers, "ذهب")
+    if gold_oz and 1000.0 < gold_oz < 5000.0:
+        usd_lyd_parallel = float(rates["usd_parallel"])
+        gold_24 = (gold_oz / 31.1035) * usd_lyd_parallel
+        rates["gold_24"] = f"{gold_24:.2f}"
+        rates["gold_18"] = f"{gold_24 * (18.0 / 24.0):.2f}"
+        matched += 2
+        print(
+            f"[ذهب] أونصة={gold_oz:.2f}$ (×سعر الموازي {usd_lyd_parallel}) → "
+            f"ع24={rates['gold_24']} / ع18={rates['gold_18']}"
+        )
+
+    # ========== 4) السوق الموازي (eanlibya) ==========
+    if _try_parallel_eanlibya(rates, headers):
+        matched += 1
+
     rates["matched_fields"] = matched
     rates["status"] = "محدث" if matched > 0 else "ثابتة"
-    print(f"\n📊 الحقول المطابقة: {matched} / 8")
+    print(f"[النتيجة] الحقول المطابقة: {matched}/8")
     return rates
 
 
-# للاختبار المحلي فقط:
+def _try_parallel_eanlibya(rates, headers):
+    """محاولة استخراج سعر الدولار الموازي من eanlibya"""
+    try:
+        r = requests.get(
+            "https://www.eanlibya.com/exchangerate/",
+            headers=headers,
+            timeout=20,
+        )
+        r.raise_for_status()
+        r.encoding = r.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+        for t in soup(["script", "style", "noscript"]):
+            t.decompose()
+        txt = soup.get_text(separator="\n")
+
+        patterns = [
+            r"الدولار\s*الأمريكي[^\d]{0,80}(\d{1,2}\.\d{2})",
+            r"USD[^\d]{0,80}(\d{1,2}\.\d{2})",
+            r"(\d{1,2}\.\d{2})\s*دينار",
+        ]
+        for pat in patterns:
+            m = re.search(pat, txt)
+            if m:
+                v = float(m.group(1))
+                if 5.0 < v < 30.0:
+                    rates["usd_parallel"] = f"{v:.2f}"
+                    print(f"[موازي] {v:.2f} LYD/USD")
+                    return True
+        print("[موازي] لم يُطابق أي نمط regex مع نص الصفحة — ربما تغيّر تصميم الموقع")
+    except Exception as e:
+        print(f"[موازي] تعذر: {e}")
+    return False
+
+
 if __name__ == "__main__":
     result = scrape_market_rates_multi_source()
-    import json
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("\n--- النتيجة النهائية ---")
+    for k, v in result.items():
+        print(f"{k}: {v}")
