@@ -66,6 +66,10 @@ def scrape_ecolibya_exact_data():
         if not res.encoding or res.encoding.lower() == "iso-8859-1":
             res.encoding = res.apparent_encoding or "utf-8"
 
+      print("HTTP Status:", res.status_code, "| Text length:", len(clean_text))
+        if matched == 0:
+            print("Sample text:\n", clean_text[:600])
+            
         soup = BeautifulSoup(res.text, "html.parser")
         # إزالة السكربتات والأنماط لتقليل التشويش النصي
         for tag in soup(["script", "style", "noscript"]):
