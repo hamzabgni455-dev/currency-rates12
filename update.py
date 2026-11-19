@@ -1,5 +1,5 @@
-def scrape_ecolibya_exact_data():
-    """استخراج البيانات من موقع اقتصاد ليبيا مع التحقق من كل حقل"""
+def scrape_market_rates_multi_source():
+    """جلب الأسعار من مصادر بديلة متعددة مع إبقاء نفس مفاتيح rates.json"""
     rates = {
         "usd_official": "6.4277",
         "usd_parallel": "10.17",
@@ -29,96 +29,81 @@ def scrape_ecolibya_exact_data():
 
     matched = 0
 
+    # 1. الدولار الرسمي من مصرف ليبيا المركزي (أو احتياطي API)
     try:
-        res = requests.get("https://ecolibya.com/", headers=headers, timeout=20)
-        res.raise_for_status()
-        if not res.encoding or res.encoding.lower() == "iso-8859-1":
-            res.encoding = res.apparent_encoding or "utf-8"
+        res_cbl = requests.get("https://cbl.gov.ly/currency-exchange-rates/", headers=headers, timeout=20)
+        res_cbl.raise_for_status()
+        if not res_cbl.encoding or res_cbl.encoding.lower() == "iso-8859-1":
+            res_cbl.encoding = res_cbl.apparent_encoding or "utf-8"
 
-        soup = BeautifulSoup(res.text, "html.parser")
-        for tag in soup(["script", "style", "noscript"]):
+        soup_cbl = BeautifulSoup(res_cbl.text, "html.parser")
+        for tag in soup_cbl(["script", "style", "noscript"]):
             tag.decompose()
+        txt_cbl = normalize_arabic_numbers(soup_cbl.get_text(separator="\n"))
 
-        raw_text = soup.get_text(separator="\n")
-        clean_text = normalize_arabic_numbers(raw_text)
-
-        # 1. الدولار الرسمي
         val_off = extract_near(
-            clean_text,
-            r"الدولار\s*الأمريكي[^\n]*?(?:السعر\s*الرسمي|الرسمي)",
-            r"(\d+\.\d{2,4})",
-            window=160
+            txt_cbl,
+            r"الدولار\s*الأمريكي",
+            r"\b(\d+\.\d{2,4})\b",
+            window=120
         )
         if val_off:
-            rates["usd_official"] = f"{float(val_off):.4f}" if len(val_off.split(".")[1]) >= 4 else val_off
+            rates["usd_official"] = f"{float(val_off):.4f}"
             matched += 1
+    except Exception as e:
+        print("تعذر جلب الدولار الرسمي من المركزي:", e)
 
-        # 2. السوق الموازية للدولار
+    # 2. السوق الموازية للدولار من عين ليبيا
+    try:
+        res_ean = requests.get("https://www.eanlibya.com/exchangerate/", headers=headers, timeout=20)
+        res_ean.raise_for_status()
+        if not res_ean.encoding or res_ean.encoding.lower() == "iso-8859-1":
+            res_ean.encoding = res_ean.apparent_encoding or "utf-8"
+
+        soup_ean = BeautifulSoup(res_ean.text, "html.parser")
+        for tag in soup_ean(["script", "style", "noscript"]):
+            tag.decompose()
+        txt_ean = normalize_arabic_numbers(soup_ean.get_text(separator="\n"))
+
         val_par = extract_near(
-            clean_text,
-            r"(?:السوق\s*الموازية|الموازي)[^\n]*?(?:الدولار)?",
-            r"\b(\d{1,2}\.\d{2,4})\b",
-            window=140
+            txt_ean,
+            r"(?:السوق\s*الموازية|الدولار)",
+            r"\b(\d{1,2}\.\d{2})\b",
+            window=120
         )
         if val_par:
             rates["usd_parallel"] = val_par
             matched += 1
-
-        # 3. الذهب غرام عيار 24 وعيار 18
-        val_gold = extract_near(
-            clean_text,
-            r"الذهب[^\n]*?(?:عيار\s*24|سعر\s*الغرام|الغرام)",
-            r"\b(\d{2,4}\.\d{2})\b",
-            window=160
-        )
-        if val_gold:
-            g24 = float(val_gold)
-            rates["gold_24"] = f"{g24:.2f}"
-            rates["gold_18"] = f"{g24 * (18.0 / 24.0):.2f}"
-            matched += 1
-
-        # 4. خام برنت العالمي
-        val_brent = extract_near(
-            clean_text,
-            r"خام\s*برنت[^\n]*?(?:السعر\s*العالمي|العالمي)?",
-            r"\b(\d{2,3}\.\d{2})\b",
-            window=150
-        )
-        if val_brent:
-            rates["oil_brent"] = val_brent
-            matched += 1
-
-        # 5. الجنيه المصري
-        val_egp = extract_near(
-            clean_text,
-            r"الجنيه\s*المصري",
-            r"\b(\d+\.\d{2,4})\b",
-            window=140
-        )
-        if val_egp:
-            rates["egp"] = val_egp
-            matched += 1
-
-        # 6. الدينار التونسي
-        val_tnd = extract_near(
-            clean_text,
-            r"الدينار\s*التونسي",
-            r"\b(\d+\.\d{2,4})\b",
-            window=140
-        )
-        if val_tnd:
-            rates["tnd"] = val_tnd
-            matched += 1
-
-        rates["matched_fields"] = matched
-        rates["status"] = "محدث" if matched > 0 else "ثابتة"
-
-        print("HTTP Status:", res.status_code, "| Text length:", len(clean_text), "| Matched:", matched)
-        if matched == 0:
-            print("Sample text:\n", clean_text[:600])
-
     except Exception as e:
-        print(f"خطأ أثناء سحب البيانات: {e}")
-        rates["status"] = "ثابتة"
+        print("تعذر جلب السوق الموازية:", e)
 
+    # 3. الذهب في ليبيا (عيار 24 وعيار 18 بالدينار الليبي) من GoldBursa
+    try:
+        res_gold = requests.get("https://www.goldbursa.com/gold/libya", headers=headers, timeout=20)
+        res_gold.raise_for_status()
+        if not res_gold.encoding or res_gold.encoding.lower() == "iso-8859-1":
+            res_gold.encoding = res_gold.apparent_encoding or "utf-8"
+
+        soup_gold = BeautifulSoup(res_gold.text, "html.parser")
+        for tag in soup_gold(["script", "style", "noscript"]):
+            tag.decompose()
+        txt_gold = normalize_arabic_numbers(soup_gold.get_text(separator="\n"))
+
+        val_g24 = extract_near(txt_gold, r"1\s*جرام\s*-\s*عيار\s*24", r"(\d{2,4}\.\d{2})", window=80)
+        val_g18 = extract_near(txt_gold, r"1\s*جرام\s*-\s*عيار\s*18", r"(\d{2,4}\.\d{2})", window=80)
+
+        if val_g24:
+            rates["gold_24"] = f"{float(val_g24):.2f}"
+            matched += 1
+        if val_g18:
+            rates["gold_18"] = f"{float(val_g18):.2f}"
+            matched += 1
+        elif val_g24:
+            rates["gold_18"] = f"{float(val_g24) * (18.0 / 24.0):.2f}"
+    except Exception as e:
+        print("تعذر جلب أسعار الذهب:", e)
+
+    rates["matched_fields"] = matched
+    rates["status"] = "محدث" if matched > 0 else "ثابتة"
+    print("Matched fields:", matched)
     return rates
